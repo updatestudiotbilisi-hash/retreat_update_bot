@@ -457,6 +457,9 @@ def set_state(ctx: ContextTypes.DEFAULT_TYPE, s: str):
 def get_camp(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     return ctx.user_data.get("camp", "wellness")
 
+def safe_html(value: object, default: str = "—") -> str:
+    return escape(str(value or default))
+
 async def show_room_photo(update: Update, rooms: list, idx: int):
     """Отправляет фото номера с описанием и навигацией."""
     room = rooms[idx]
@@ -477,43 +480,13 @@ async def show_room_photo(update: Update, rooms: list, idx: int):
             reply_markup=rooms_nav_kb(idx, total),
         )
 
-async def send_lead(ctx: ContextTypes.DEFAULT_TYPE, form: dict, user):
-    """Формирует и отправляет карточку заявки менеджерам."""
-    camp_emoji = "🏕" if form.get("camp") == "wellness" else "👨‍👩‍👧"
-    camp_name  = "WELLNESS CAMP" if form.get("camp") == "wellness" else "FAMILY CAMP"
+async def deliver_manager_message(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    message_text: str,
+    log_prefix: str,
+):
+    """Доставляет сообщение менеджерам в личные чаты и fallback-чат."""
 
-    def safe(value: object) -> str:
-        return escape(str(value or "—"))
-
-    lines = [
-        f"<b>🔔 Новая заявка — {camp_emoji} {camp_name}</b>",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        f"<b>👤 Имя:</b> {safe(form.get('name'))}",
-        f"<b>📱 Контакт:</b> {safe(form.get('contact'))}",
-        f"<b>👥 Состав/количество:</b> {safe(form.get('people'))}",
-        f"<b>🛏 Номер:</b> {safe(form.get('room'))}",
-    ]
-
-    if form.get("camp") == "family" and form.get("dates"):
-        lines.append(f"<b>📅 Даты:</b> {safe(form.get('dates'))}")
-
-    lines.append(f"<b>➕ Опции:</b> {safe(form.get('options'))}")
-
-    if form.get("comment"):
-        lines.append(f"<b>💬 Комментарий:</b> {safe(form.get('comment'))}")
-
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-
-    tg_link = (
-        f"@{escape(user.username)}"
-        if user.username
-        else f'<a href="tg://user?id={user.id}">написать</a>'
-    )
-    lines.append(f"<b>🔗 Telegram:</b> {tg_link}")
-    lines.append(f"<b>🆔 User ID:</b> <code>{user.id}</code>")
-    lines.append(escape(datetime.now().strftime('%d.%m.%Y  %H:%M')))
-
-    message_text = "\n".join(lines)
     last_error = None
     delivered_count = 0
 
@@ -526,7 +499,7 @@ async def send_lead(ctx: ContextTypes.DEFAULT_TYPE, form: dict, user):
             )
             delivered_count += 1
         except Exception as exc:
-            print(f"Ошибка отправки лида менеджеру chat_id={chat_id}: {exc}")
+            print(f"{log_prefix} менеджеру chat_id={chat_id}: {exc}")
             last_error = exc
 
     if delivered_count:
@@ -549,15 +522,88 @@ async def send_lead(ctx: ContextTypes.DEFAULT_TYPE, form: dict, user):
                 )
                 return
             except Exception as exc:
-                print(f"Ошибка отправки лида в chat_id={chat_id}: {exc}")
+                print(f"{log_prefix} в chat_id={chat_id}: {exc}")
                 last_error = exc
 
     if last_error:
         raise last_error
     raise RuntimeError("No manager delivery targets configured")
 
+async def send_lead(ctx: ContextTypes.DEFAULT_TYPE, form: dict, user):
+    """Формирует и отправляет карточку заявки менеджерам."""
+    camp_emoji = "🏕" if form.get("camp") == "wellness" else "👨‍👩‍👧"
+    camp_name  = "WELLNESS CAMP" if form.get("camp") == "wellness" else "FAMILY CAMP"
+
+    lines = [
+        f"<b>🔔 Новая заявка — {camp_emoji} {camp_name}</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"<b>👤 Имя:</b> {safe_html(form.get('name'))}",
+        f"<b>📱 Контакт:</b> {safe_html(form.get('contact'))}",
+        f"<b>👥 Состав/количество:</b> {safe_html(form.get('people'))}",
+        f"<b>🛏 Номер:</b> {safe_html(form.get('room'))}",
+    ]
+
+    if form.get("camp") == "family" and form.get("dates"):
+        lines.append(f"<b>📅 Даты:</b> {safe_html(form.get('dates'))}")
+
+    lines.append(f"<b>➕ Опции:</b> {safe_html(form.get('options'))}")
+
+    if form.get("comment"):
+        lines.append(f"<b>💬 Комментарий:</b> {safe_html(form.get('comment'))}")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+
+    tg_link = (
+        f"@{escape(user.username)}"
+        if user.username
+        else f'<a href="tg://user?id={user.id}">написать</a>'
+    )
+    lines.append(f"<b>🔗 Telegram:</b> {tg_link}")
+    lines.append(f"<b>🆔 User ID:</b> <code>{user.id}</code>")
+    lines.append(escape(datetime.now().strftime('%d.%m.%Y  %H:%M')))
+
+    await deliver_manager_message(
+        ctx,
+        "\n".join(lines),
+        "Ошибка отправки лида",
+    )
+
+async def notify_new_contact(ctx: ContextTypes.DEFAULT_TYPE, user):
+    """Отправляет менеджерам новый контакт при первом /start."""
+    tg_link = (
+        f"@{escape(user.username)}"
+        if user.username
+        else f'<a href="tg://user?id={user.id}">открыть чат</a>'
+    )
+    full_name = " ".join(part for part in [user.first_name, user.last_name] if part).strip()
+    lines = [
+        "<b>🆕 Новый контакт в боте</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"<b>👤 Имя:</b> {safe_html(full_name)}",
+        f"<b>🔗 Telegram:</b> {tg_link}",
+        f"<b>🆔 User ID:</b> <code>{user.id}</code>",
+        f"<b>📥 Действие:</b> нажал /start",
+        escape(datetime.now().strftime('%d.%m.%Y  %H:%M')),
+    ]
+    await deliver_manager_message(
+        ctx,
+        "\n".join(lines),
+        "Ошибка отправки нового контакта",
+    )
+
 # ─── ОБРАБОТЧИКИ ──────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message_text = update.message.text if update.message else ""
+    if user and message_text.startswith("/start"):
+        started_user_ids = ctx.application.bot_data.setdefault("started_user_ids", set())
+        if user.id not in started_user_ids:
+            try:
+                await notify_new_contact(ctx, user)
+                started_user_ids.add(user.id)
+            except Exception as exc:
+                print(f"Не удалось сохранить новый контакт user_id={user.id}: {exc}")
+
     ctx.user_data.clear()
     set_state(ctx, S_MAIN)
     await update.message.reply_text(
