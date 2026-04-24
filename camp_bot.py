@@ -489,11 +489,29 @@ async def send_lead(ctx: ContextTypes.DEFAULT_TYPE, form: dict, user):
     lines.append(f"<b>🆔 User ID:</b> <code>{user.id}</code>")
     lines.append(escape(datetime.now().strftime('%d.%m.%Y  %H:%M')))
 
-    await ctx.bot.send_message(
-        MANAGER_GROUP_ID,
-        "\n".join(lines),
-        parse_mode="HTML",
-    )
+    message_text = "\n".join(lines)
+    candidate_chat_ids = [MANAGER_GROUP_ID]
+
+    # В Telegram у supergroup/chat id для Bot API часто имеют формат -100...
+    manager_group_id_str = str(MANAGER_GROUP_ID)
+    if MANAGER_GROUP_ID < 0 and not manager_group_id_str.startswith("-100"):
+        candidate_chat_ids.append(int(f"-100{abs(MANAGER_GROUP_ID)}"))
+
+    last_error = None
+    for chat_id in candidate_chat_ids:
+        try:
+            await ctx.bot.send_message(
+                chat_id,
+                message_text,
+                parse_mode="HTML",
+            )
+            return
+        except Exception as exc:
+            print(f"Ошибка отправки лида в chat_id={chat_id}: {exc}")
+            last_error = exc
+
+    if last_error:
+        raise last_error
 
 # ─── ОБРАБОТЧИКИ ──────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
