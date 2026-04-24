@@ -5,7 +5,8 @@
 ╠══════════════════════════════════════════════════════════════╣
 ║  ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:                                       ║
 ║  TELEGRAM_TOKEN     — токен бота из BotFather                ║
-║  MANAGER_GROUP_ID   — chat_id группы менеджеров              ║
+║  MANAGER_CHAT_IDS   — личные chat_id менеджеров через запятую║
+║  MANAGER_GROUP_ID   — legacy fallback для группового чата    ║
 ║  PORT               — порт healthcheck для web-деплоя        ║
 ║
 ║                                                              ║
@@ -14,7 +15,7 @@
 ║  📸 Показывать номера с фотографиями                         ║
 ║  💰 Озвучивать цены и опции                                  ║
 ║  📝 Принимать заявки пошагово                                ║
-║  📨 Слать красивые карточки лидов в группу менеджеров        ║
+║  📨 Слать красивые карточки лидов менеджерам в личку         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -61,10 +62,33 @@ def start_healthcheck_server() -> None:
 
 TELEGRAM_TOKEN = require_env("TELEGRAM_TOKEN")
 
-try:
-    MANAGER_GROUP_ID = int(require_env("MANAGER_GROUP_ID"))
-except ValueError as exc:
-    raise RuntimeError("MANAGER_GROUP_ID must be an integer chat_id") from exc
+def parse_chat_ids(raw_value: str) -> list[int]:
+    chat_ids = []
+    for chunk in raw_value.split(","):
+        value = chunk.strip()
+        if not value:
+            continue
+        try:
+            chat_ids.append(int(value))
+        except ValueError as exc:
+            raise RuntimeError(
+                "MANAGER_CHAT_IDS must be a comma-separated list of integer chat_id values"
+            ) from exc
+    if not chat_ids:
+        raise RuntimeError("MANAGER_CHAT_IDS must contain at least one chat_id")
+    return chat_ids
+
+
+raw_manager_chat_ids = os.getenv("MANAGER_CHAT_IDS", "286239362,1194548274,215577345")
+MANAGER_CHAT_IDS = parse_chat_ids(raw_manager_chat_ids) if raw_manager_chat_ids else []
+
+raw_manager_group_id = os.getenv("MANAGER_GROUP_ID")
+MANAGER_GROUP_ID = None
+if raw_manager_group_id:
+    try:
+        MANAGER_GROUP_ID = int(raw_manager_group_id)
+    except ValueError as exc:
+        raise RuntimeError("MANAGER_GROUP_ID must be an integer chat_id") from exc
 
 # ─── STATES ───────────────────────────────────────────────────
 S_MAIN      = "main"
@@ -490,28 +514,47 @@ async def send_lead(ctx: ContextTypes.DEFAULT_TYPE, form: dict, user):
     lines.append(escape(datetime.now().strftime('%d.%m.%Y  %H:%M')))
 
     message_text = "\n".join(lines)
-    candidate_chat_ids = [MANAGER_GROUP_ID]
-
-    # В Telegram у supergroup/chat id для Bot API часто имеют формат -100...
-    manager_group_id_str = str(MANAGER_GROUP_ID)
-    if MANAGER_GROUP_ID < 0 and not manager_group_id_str.startswith("-100"):
-        candidate_chat_ids.append(int(f"-100{abs(MANAGER_GROUP_ID)}"))
-
     last_error = None
-    for chat_id in candidate_chat_ids:
+    delivered_count = 0
+
+    for chat_id in MANAGER_CHAT_IDS:
         try:
             await ctx.bot.send_message(
                 chat_id,
                 message_text,
                 parse_mode="HTML",
             )
-            return
+            delivered_count += 1
         except Exception as exc:
-            print(f"Ошибка отправки лида в chat_id={chat_id}: {exc}")
+            print(f"Ошибка отправки лида менеджеру chat_id={chat_id}: {exc}")
             last_error = exc
+
+    if delivered_count:
+        return
+
+    if MANAGER_GROUP_ID is not None:
+        candidate_chat_ids = [MANAGER_GROUP_ID]
+
+        # Legacy fallback: для supergroup/chat id Bot API часто используют формат -100...
+        manager_group_id_str = str(MANAGER_GROUP_ID)
+        if MANAGER_GROUP_ID < 0 and not manager_group_id_str.startswith("-100"):
+            candidate_chat_ids.append(int(f"-100{abs(MANAGER_GROUP_ID)}"))
+
+        for chat_id in candidate_chat_ids:
+            try:
+                await ctx.bot.send_message(
+                    chat_id,
+                    message_text,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as exc:
+                print(f"Ошибка отправки лида в chat_id={chat_id}: {exc}")
+                last_error = exc
 
     if last_error:
         raise last_error
+    raise RuntimeError("No manager delivery targets configured")
 
 # ─── ОБРАБОТЧИКИ ──────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -900,7 +943,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if lead_sent:
             confirm_text = (
                 "✅ *Заявка принята!*\n\n"
-                f"Спасибо! Ваша заявка на *{camp_name}* передана менеджеру.\n\n"
+                f"Спасибо! Ваша заявка на *{camp_name}* передана менеджерам.\n\n"
                 f"Мы свяжемся с вами в ближайшее время и пришлём все детали.\n\n"
                 f"Можно также написать напрямую: {contact}\n\n"
                 "_До встречи в горах Грузии! 🏔_"
