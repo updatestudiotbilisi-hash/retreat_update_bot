@@ -1,1 +1,1 @@
-web: python sol_bot.py
+web: python camp_bot.py
